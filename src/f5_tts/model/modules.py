@@ -739,6 +739,39 @@ class DiTBlock(nn.Module):
 
         self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
+        self.mamba_attn = None
+        self.attn_blend_alpha = None
+        self.mamba_teacher_enabled = True
+
+    def enable_mamba_mixer(
+        self,
+        *,
+        dim: int,
+        d_state: int = 64,
+        d_conv: int = 4,
+        expand: int = 1,
+        bidirectional: bool = True,
+        alpha_init: float = 0.0,
+    ):
+        from f5_tts.model.hybrid_mamba import ConservativeMambaMixer
+
+        self.mamba_attn = ConservativeMambaMixer(
+            dim=dim,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+            bidirectional=bidirectional,
+        )
+        self.attn_blend_alpha = nn.Parameter(torch.tensor(float(alpha_init)))
+        self.mamba_teacher_enabled = True
+
+    def set_mamba_teacher_enabled(self, enabled: bool):
+        self.mamba_teacher_enabled = enabled
+
+    def allowed_missing_state_dict_keys(self) -> tuple[str, ...]:
+        if self.mamba_attn is None:
+            return tuple()
+        return ("mamba_attn.", "attn_blend_alpha")
 
     def forward(self, x, t, mask=None, rope=None):  # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
@@ -746,6 +779,15 @@ class DiTBlock(nn.Module):
 
         # attention
         attn_output = self.attn(x=norm, mask=mask, rope=rope)
+        if self.mamba_attn is not None:
+            alpha = self.attn_blend_alpha.clamp(0.0, 1.0)
+            if self.mamba_teacher_enabled:
+                # Keep alpha=0 parity exact by not executing the new branch at all.
+                if alpha.detach().item() > 0.0:
+                    mamba_output = self.mamba_attn(norm, mask=mask)
+                    attn_output = attn_output + alpha * (mamba_output - attn_output)
+            else:
+                attn_output = self.mamba_attn(norm, mask=mask)
 
         # process attention output for input x
         x = x + gate_msa.unsqueeze(1) * attn_output

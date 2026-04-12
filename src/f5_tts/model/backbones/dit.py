@@ -25,6 +25,23 @@ from f5_tts.model.modules import (
 )
 
 
+def _normalize_block_ids(block_ids, depth: int) -> tuple[int, ...]:
+    if not block_ids:
+        return tuple()
+
+    normalized = []
+    for block_id in block_ids:
+        index = int(block_id)
+        if index < 0:
+            index += depth
+        if not 0 <= index < depth:
+            raise ValueError(f"mamba_block_ids contains out-of-range index {block_id} for depth={depth}")
+        if index not in normalized:
+            normalized.append(index)
+
+    return tuple(sorted(normalized))
+
+
 # Text embedding
 
 
@@ -187,6 +204,12 @@ class DiT(nn.Module):
         attn_mask_enabled=False,
         long_skip_connection=False,
         checkpoint_activations=False,
+        mamba_block_ids: tuple[int, ...] | list[int] | None = None,
+        mamba_bidirectional: bool = True,
+        mamba_d_state: int = 64,
+        mamba_d_conv: int = 4,
+        mamba_expand: int = 1,
+        mamba_alpha_init: float = 0.0,
     ):
         super().__init__()
 
@@ -207,6 +230,7 @@ class DiT(nn.Module):
 
         self.dim = dim
         self.depth = depth
+        self.mamba_block_ids = _normalize_block_ids(mamba_block_ids, depth)
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -224,6 +248,15 @@ class DiT(nn.Module):
                 for _ in range(depth)
             ]
         )
+        for block_id in self.mamba_block_ids:
+            self.transformer_blocks[block_id].enable_mamba_mixer(
+                dim=dim,
+                d_state=mamba_d_state,
+                d_conv=mamba_d_conv,
+                expand=mamba_expand,
+                bidirectional=mamba_bidirectional,
+                alpha_init=mamba_alpha_init,
+            )
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
 
         self.norm_out = AdaLayerNorm_Final(dim)  # final modulation
@@ -287,6 +320,18 @@ class DiT(nn.Module):
 
     def clear_cache(self):
         self.text_cond, self.text_uncond = None, None
+
+    def set_mamba_teacher_enabled(self, enabled: bool, block_ids: tuple[int, ...] | list[int] | None = None):
+        block_ids = self.mamba_block_ids if block_ids is None else _normalize_block_ids(block_ids, self.depth)
+        for block_id in block_ids:
+            self.transformer_blocks[block_id].set_mamba_teacher_enabled(enabled)
+
+    def allowed_missing_state_dict_keys(self) -> tuple[str, ...]:
+        allowed_missing = []
+        for block_id, block in enumerate(self.transformer_blocks):
+            for prefix in block.allowed_missing_state_dict_keys():
+                allowed_missing.append(f"transformer_blocks.{block_id}.{prefix}")
+        return tuple(allowed_missing)
 
     def forward(
         self,

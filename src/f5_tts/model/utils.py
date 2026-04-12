@@ -47,6 +47,42 @@ def is_package_available(package_name: str) -> bool:
         return False
 
 
+def get_allowed_missing_state_dict_prefixes(model: torch.nn.Module) -> tuple[str, ...]:
+    prefixes = []
+
+    if hasattr(model, "allowed_missing_state_dict_keys"):
+        prefixes.extend(model.allowed_missing_state_dict_keys())
+
+    transformer = getattr(model, "transformer", None)
+    if transformer is not None and hasattr(transformer, "allowed_missing_state_dict_keys"):
+        prefixes.extend(f"transformer.{prefix}" for prefix in transformer.allowed_missing_state_dict_keys())
+
+    return tuple(prefixes)
+
+
+def load_state_dict_with_allowed_missing(
+    model: torch.nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    extra_allowed_missing_prefixes: tuple[str, ...] = tuple(),
+):
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    allowed_prefixes = extra_allowed_missing_prefixes + get_allowed_missing_state_dict_prefixes(model)
+
+    def is_allowed(key: str) -> bool:
+        return any(key == prefix or key.startswith(prefix) for prefix in allowed_prefixes)
+
+    missing_keys = [key for key in incompatible.missing_keys if not is_allowed(key)]
+    unexpected_keys = list(incompatible.unexpected_keys)
+    if missing_keys or unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint is incompatible with the current model. "
+            f"Missing keys: {missing_keys[:10]}; unexpected keys: {unexpected_keys[:10]}"
+        )
+
+    allowed_missing_keys = [key for key in incompatible.missing_keys if is_allowed(key)]
+    return type(incompatible)(allowed_missing_keys, unexpected_keys)
+
+
 # tensor helpers
 
 

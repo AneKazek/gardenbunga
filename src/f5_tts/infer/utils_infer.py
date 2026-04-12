@@ -29,7 +29,7 @@ from transformers import pipeline
 from vocos import Vocos
 
 from f5_tts.model import CFM
-from f5_tts.model.utils import convert_char_to_pinyin, get_tokenizer
+from f5_tts.model.utils import convert_char_to_pinyin, get_tokenizer, load_state_dict_with_allowed_missing
 
 
 _ref_audio_cache = {}
@@ -220,11 +220,11 @@ def load_checkpoint(model, ckpt_path, device: str, dtype=None, use_ema=True):
             if key in checkpoint["model_state_dict"]:
                 del checkpoint["model_state_dict"][key]
 
-        model.load_state_dict(checkpoint["model_state_dict"])
+        load_state_dict_with_allowed_missing(model, checkpoint["model_state_dict"])
     else:
         if ckpt_type == "safetensors":
             checkpoint = {"model_state_dict": checkpoint}
-        model.load_state_dict(checkpoint["model_state_dict"])
+        load_state_dict_with_allowed_missing(model, checkpoint["model_state_dict"])
 
     del checkpoint
     torch.cuda.empty_cache()

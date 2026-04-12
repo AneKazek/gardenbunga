@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from f5_tts.model import CFM
 from f5_tts.model.dataset import DynamicBatchSampler, collate_fn
-from f5_tts.model.utils import default, exists
+from f5_tts.model.utils import default, exists, get_allowed_missing_state_dict_prefixes, load_state_dict_with_allowed_missing
 
 
 # trainer
@@ -228,8 +228,15 @@ class Trainer:
             if key in checkpoint["ema_model_state_dict"]:
                 del checkpoint["ema_model_state_dict"][key]
 
+        model_allowed_missing = get_allowed_missing_state_dict_prefixes(self.accelerator.unwrap_model(self.model))
+        ema_allowed_missing = model_allowed_missing + tuple(f"ema_model.{prefix}" for prefix in model_allowed_missing)
+
         if self.is_main:
-            self.ema_model.load_state_dict(checkpoint["ema_model_state_dict"])
+            load_state_dict_with_allowed_missing(
+                self.ema_model,
+                checkpoint["ema_model_state_dict"],
+                extra_allowed_missing_prefixes=ema_allowed_missing,
+            )
 
         if "update" in checkpoint or "step" in checkpoint:
             # patch for backward compatibility, with before f992c4e
@@ -244,7 +251,10 @@ class Trainer:
                 if key in checkpoint["model_state_dict"]:
                     del checkpoint["model_state_dict"][key]
 
-            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+            load_state_dict_with_allowed_missing(
+                self.accelerator.unwrap_model(self.model),
+                checkpoint["model_state_dict"],
+            )
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             if self.scheduler:
                 self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -255,7 +265,10 @@ class Trainer:
                 for k, v in checkpoint["ema_model_state_dict"].items()
                 if k not in ["initted", "update", "step"]
             }
-            self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["model_state_dict"])
+            load_state_dict_with_allowed_missing(
+                self.accelerator.unwrap_model(self.model),
+                checkpoint["model_state_dict"],
+            )
             update = 0
 
         del checkpoint
