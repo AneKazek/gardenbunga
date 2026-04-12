@@ -1,269 +1,284 @@
-# F5-TTS: A Fairytaler that Fakes Fluent and Faithful Speech with Flow Matching
+# Project GardenBunga: Efficient Hybrid Sequence Modeling for Indonesian Speech Synthesis via Multilingual Knowledge Transfer
 
-[![python](https://img.shields.io/badge/Python-3.10-brightgreen)](https://github.com/SWivid/F5-TTS)
-[![arXiv](https://img.shields.io/badge/arXiv-2410.06885-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2410.06885)
-[![demo](https://img.shields.io/badge/GitHub-Demo-orange.svg)](https://swivid.github.io/F5-TTS/)
-[![hfspace](https://img.shields.io/badge/🤗-HF%20Space-yellow)](https://huggingface.co/spaces/mrfakename/E2-F5-TTS)
-[![msspace](https://img.shields.io/badge/🤖-MS%20Space-blue)](https://modelscope.cn/studios/AI-ModelScope/E2-F5-TTS)
-[![lab](https://img.shields.io/badge/🏫-X--LANCE-grey?labelColor=lightgrey)](https://x-lance.sjtu.edu.cn/)
-[![lab](https://img.shields.io/badge/🏫-SII-grey?labelColor=lightgrey)](https://www.sii.edu.cn/)
-[![lab](https://img.shields.io/badge/🏫-PCL-grey?labelColor=lightgrey)](https://www.pcl.ac.cn)
-<!-- <img src="https://github.com/user-attachments/assets/12d7749c-071a-427c-81bf-b87b91def670" alt="Watermark" style="width: 40px; height: auto"> -->
+<p align="center">
+  <a href="https://www.python.org/downloads/release/python-3110/"><img src="https://img.shields.io/badge/Python-3.11-blue.svg" alt="Python 3.11"></a>
+  <a href="https://pytorch.org/get-started/locally/"><img src="https://img.shields.io/badge/PyTorch-2.8.0-ee4c2c.svg" alt="PyTorch 2.8.0"></a>
+  <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.8-76b900.svg" alt="CUDA 12.8"></a>
+  <a href="https://github.com/state-spaces/mamba"><img src="https://img.shields.io/badge/Mamba-2.3.1-6f42c1.svg" alt="Mamba 2.3.1"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License"></a>
+  <img src="https://img.shields.io/badge/Language-Indonesian%20TTS-orange.svg" alt="Indonesian TTS">
+  <img src="https://img.shields.io/badge/Research-Hybrid%20DiT--Mamba-black.svg" alt="Hybrid DiT-Mamba">
+</p>
 
-**F5-TTS**: Diffusion Transformer with ConvNeXt V2, faster trained and inference.
+<p align="center">
+  A research-focused F5-TTS fork for efficient Indonesian speech synthesis with conservative Hybrid DiT-Mamba integration.
+</p>
 
-**E2 TTS**: Flat-UNet Transformer, closest reproduction from [paper](https://arxiv.org/abs/2406.18009).
+## Overview
 
-**Sway Sampling**: Inference-time flow step sampling strategy, greatly improves performance
+Project GardenBunga is a research fork of [F5-TTS](https://github.com/SWivid/F5-TTS) centered on Indonesian speech synthesis through multilingual knowledge transfer and efficient hybrid sequence modeling.
 
-### Thanks to all the contributors !
+The main idea in this repository is deliberately conservative: instead of replacing the whole backbone, we only swap a very small number of DiT attention blocks with Mamba SSM blocks while keeping the rest of the F5-TTS training and inference pipeline as intact as possible. The current default conservative configuration uses a 2-block Hybrid DiT-Mamba setup.
 
-## News
-- **2025/03/12**: 🔥 F5-TTS v1 base model with better training and inference performance. [Few demo](https://swivid.github.io/F5-TTS_updates).
-- **2024/10/08**: F5-TTS & E2 TTS base models on [🤗 Hugging Face](https://huggingface.co/SWivid/F5-TTS), [🤖 Model Scope](https://www.modelscope.cn/models/SWivid/F5-TTS_Emilia-ZH-EN), [🟣 Wisemodel](https://wisemodel.cn/models/SJTU_X-LANCE/F5-TTS_Emilia-ZH-EN).
+This repository keeps the upstream package and CLI naming for compatibility. That means the project is called **GardenBunga**, but Python package and console commands still use the upstream `f5-tts` naming convention.
+
+## Research Focus
+
+- Conservative Hybrid DiT-Mamba integration for Indonesian TTS
+- Multilingual knowledge transfer from pretrained F5-TTS checkpoints
+- Minimal architectural disruption for faster stabilization
+- Kaggle-friendly finetuning workflow with local dataset paths
+- Lightweight inference smoke testing after training
+
+## Current Default Hybrid Setup
+
+The current conservative configuration lives in [F5TTS_v1_Base_Mamba_Conservative.yaml](./src/f5_tts/configs/F5TTS_v1_Base_Mamba_Conservative.yaml).
+
+Key points:
+
+- Backbone: `DiT`
+- Hybrid blocks: `mamba_block_ids: [11, 14]`
+- Mamba mode: bidirectional
+- Mamba init: `alpha = 0.0` for conservative blending startup
+- Vocoder path: standard F5-TTS pipeline
+
+This means the project is already configured to use Mamba in a limited, controlled way rather than performing a full architectural replacement.
+
+## Authors
+
+| Name | NRP |
+| --- | --- |
+| Muhammad Dzaky Haidar | 5054251039 |
+| Benedictus Ryu Gunawan | 5054251001 |
+| Muhammad Irzam Hafis Fabiansyah | 5054251024 |
+
+## Repository Layout
+
+- [src/f5_tts/configs/F5TTS_v1_Base_Mamba_Conservative.yaml](./src/f5_tts/configs/F5TTS_v1_Base_Mamba_Conservative.yaml)  
+  Default conservative hybrid configuration.
+
+- [src/f5_tts/model/hybrid_mamba.py](./src/f5_tts/model/hybrid_mamba.py)  
+  Hybrid Mamba mixer implementation for the conservative swap.
+
+- [src/f5_tts/train/train.py](./src/f5_tts/train/train.py)  
+  Main training entrypoint.
+
+- [src/f5_tts/train/datasets/prepare_csv_wavs.py](./src/f5_tts/train/datasets/prepare_csv_wavs.py)  
+  Dataset preparation script for custom CSV metadata.
+
+- [src/f5_tts/infer](./src/f5_tts/infer)  
+  Inference utilities, CLI, and Gradio app.
+
+- [notebook/traineo1_kaggle_clean.ipynb](./notebook/traineo1_kaggle_clean.ipynb)  
+  Kaggle-oriented notebook for clone, install, dataset preparation, finetuning, and inference smoke test.
+
+- [deep-research-report.md](./deep-research-report.md)  
+  Design rationale and conservative hybrid integration notes.
 
 ## Installation
 
-### Create a separate environment if needed
+### 1. System prerequisites
+
+Recommended for Linux or WSL:
 
 ```bash
-# Create a conda env with python_version>=3.10  (you could also use virtualenv)
-conda create -n f5-tts python=3.11
-conda activate f5-tts
-
-# Install FFmpeg if you haven't yet
-conda install ffmpeg
+sudo apt-get update
+sudo apt-get install -y ffmpeg python3.11 python3.11-venv python3.11-dev build-essential
 ```
 
-### Install PyTorch with matched device
-
-<details>
-<summary>NVIDIA GPU</summary>
-
-> ```bash
-> # Install pytorch with your CUDA version, e.g.
-> pip install torch==2.8.0+cu128 torchaudio==2.8.0+cu128 --extra-index-url https://download.pytorch.org/whl/cu128
-> 
-> # And also possible previous versions, e.g.
-> pip install torch==2.4.0+cu124 torchaudio==2.4.0+cu124 --extra-index-url https://download.pytorch.org/whl/cu124
-> # etc.
-> ```
-
-</details>
-
-<details>
-<summary>AMD GPU</summary>
-
-> ```bash
-> # Install pytorch with your ROCm version (Linux only), e.g.
-> pip install torch==2.5.1+rocm6.2 torchaudio==2.5.1+rocm6.2 --extra-index-url https://download.pytorch.org/whl/rocm6.2
-> ```
-
-</details>
-
-<details>
-<summary>Intel GPU</summary>
-
-> ```bash
-> # Install pytorch with your XPU version, e.g.
-> # Intel® Deep Learning Essentials or Intel® oneAPI Base Toolkit must be installed
-> pip install torch torchaudio --index-url https://download.pytorch.org/whl/test/xpu
-> 
-> # Intel GPU support is also available through IPEX (Intel® Extension for PyTorch)
-> # IPEX does not require the Intel® Deep Learning Essentials or Intel® oneAPI Base Toolkit
-> # See: https://pytorch-extension.intel.com/installation?request=platform
-> ```
-
-</details>
-
-<details>
-<summary>Apple Silicon</summary>
-
-> ```bash
-> # Install the stable pytorch, e.g.
-> pip install torch torchaudio
-> ```
-
-</details>
-
-### Then you can choose one from below:
-
-> ### 1. As a pip package (if just for inference)
-> 
-> ```bash
-> pip install f5-tts
-> ```
-> 
-> ### 2. Local editable (if also do training, finetuning)
-> 
-> ```bash
-> git clone https://github.com/SWivid/F5-TTS.git
-> cd F5-TTS
-> # git submodule update --init --recursive  # (optional, if use bigvgan as vocoder)
-> pip install -e .
-> ```
-
-### Docker usage also available
-```bash
-# Build from Dockerfile
-docker build -t f5tts:v1 .
-
-# Run from GitHub Container Registry
-docker container run --rm -it --gpus=all --mount 'type=volume,source=f5-tts,target=/root/.cache/huggingface/hub/' -p 7860:7860 ghcr.io/swivid/f5-tts:main
-
-# Quickstart if you want to just run the web interface (not CLI)
-docker container run --rm -it --gpus=all --mount 'type=volume,source=f5-tts,target=/root/.cache/huggingface/hub/' -p 7860:7860 ghcr.io/swivid/f5-tts:main f5-tts_infer-gradio --host 0.0.0.0
-```
-
-### Runtime
-
-Deployment solution with Triton and TensorRT-LLM.
-
-#### Benchmark Results
-Decoding on a single L20 GPU, using 26 different prompt_audio & target_text pairs, 16 NFE.
-
-| Model               | Concurrency    | Avg Latency | RTF    | Mode            |
-|---------------------|----------------|-------------|--------|-----------------|
-| F5-TTS Base (Vocos) | 2              | 253 ms      | 0.0394 | Client-Server   |
-| F5-TTS Base (Vocos) | 1 (Batch_size) | -           | 0.0402 | Offline TRT-LLM |
-| F5-TTS Base (Vocos) | 1 (Batch_size) | -           | 0.1467 | Offline Pytorch |
-
-See [detailed instructions](src/f5_tts/runtime/triton_trtllm/README.md) for more information.
-
-
-## Inference
-
-- In order to achieve desired performance, take a moment to read [detailed guidance](src/f5_tts/infer).
-- By properly searching the keywords of problem encountered, [issues](https://github.com/SWivid/F5-TTS/issues?q=is%3Aissue) are very helpful.
-
-### 1. Gradio App
-
-Currently supported features:
-
-- Basic TTS with Chunk Inference
-- Multi-Style / Multi-Speaker Generation
-- Voice Chat powered by Qwen2.5-3B-Instruct
-- [Custom inference with more language support](src/f5_tts/infer/SHARED.md)
+### 2. Clone the repository
 
 ```bash
-# Launch a Gradio app (web interface)
-f5-tts_infer-gradio
-
-# Specify the port/host
-f5-tts_infer-gradio --port 7860 --host 0.0.0.0
-
-# Launch a share link
-f5-tts_infer-gradio --share
+git clone https://github.com/AneKazek/gardenbunga.git
+cd gardenbunga
 ```
 
-<details>
-<summary>NVIDIA device docker compose file example</summary>
-
-```yaml
-services:
-  f5-tts:
-    image: ghcr.io/swivid/f5-tts:main
-    ports:
-      - "7860:7860"
-    environment:
-      GRADIO_SERVER_PORT: 7860
-    entrypoint: ["f5-tts_infer-gradio", "--port", "7860", "--host", "0.0.0.0"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-volumes:
-  f5-tts:
-    driver: local
-```
-
-</details>
-
-### 2. CLI Inference
+### 3. Create a Python 3.11 environment
 
 ```bash
-# Run with flags
-# Leave --ref_text "" will have ASR model transcribe (extra GPU memory usage)
-f5-tts_infer-cli --model F5TTS_v1_Base \
---ref_audio "provide_prompt_wav_path_here.wav" \
---ref_text "The content, subtitle or transcription of reference audio." \
---gen_text "Some text you want TTS model generate for you."
-
-# Run with default setting. src/f5_tts/infer/examples/basic/basic.toml
-f5-tts_infer-cli
-# Or with your own .toml file
-f5-tts_infer-cli -c custom.toml
-
-# Multi voice. See src/f5_tts/infer/README.md
-f5-tts_infer-cli -c src/f5_tts/infer/examples/multi/story.toml
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip wheel "setuptools<82"
 ```
 
+### 4. Install PyTorch with CUDA 12.8
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu128 \
+  torch==2.8.0+cu128 torchvision==0.23.0+cu128 torchaudio==2.8.0+cu128
+```
+
+### 5. Install the project
+
+Base install:
+
+```bash
+pip install -e .
+```
+
+Install with hybrid Mamba extras:
+
+```bash
+pip install -e ".[mamba]"
+```
+
+Optional evaluation dependencies:
+
+```bash
+pip install -e ".[eval]"
+```
+
+### 6. Verify the environment
+
+```bash
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda :", torch.version.cuda)
+print("abi  :", torch.compiled_with_cxx11_abi())
+print("gpu  :", torch.cuda.device_count())
+PY
+```
+
+## Kaggle Workflow
+
+For the most reproducible workflow in this project, use:
+
+- [notebook/traineo1_kaggle_clean.ipynb](./notebook/traineo1_kaggle_clean.ipynb)
+
+That notebook is designed to:
+
+1. clone the repo inside Kaggle,
+2. create a Python 3.11 virtual environment in `/kaggle/temp`,
+3. install matching PyTorch and Mamba wheels,
+4. use an already-downloaded Kaggle dataset by local path,
+5. prepare the dataset,
+6. finetune with the conservative hybrid config,
+7. run an inference smoke test.
+
+## Dataset Preparation
+
+This project supports custom dataset preparation through a CSV file with the required header:
+
+```text
+audio_file|text
+```
+
+Example:
+
+```text
+/absolute/path/to/audio_0001.wav|Halo, selamat datang di Project GardenBunga.
+/absolute/path/to/audio_0002.wav|Ini adalah contoh metadata untuk fine-tuning.
+```
+
+Prepare the dataset with:
+
+```bash
+python src/f5_tts/train/datasets/prepare_csv_wavs.py /path/to/metadata.csv /path/to/output_dataset --workers 4
+```
+
+For training with the built-in loader, the prepared dataset is typically placed under:
+
+```text
+data/<dataset_name>_pinyin
+```
 
 ## Training
 
-### 1. With Hugging Face Accelerate
+The main training entrypoint is:
 
-Refer to [training & finetuning guidance](src/f5_tts/train) for best practice.
+- [train.py](./src/f5_tts/train/train.py)
 
-### 2. With Gradio App
+The default hybrid experiment in this repository uses:
+
+- [F5TTS_v1_Base_Mamba_Conservative.yaml](./src/f5_tts/configs/F5TTS_v1_Base_Mamba_Conservative.yaml)
+
+Example training command:
 
 ```bash
-# Quick start with Gradio web interface
+accelerate launch src/f5_tts/train/train.py \
+  --config-name F5TTS_v1_Base_Mamba_Conservative.yaml \
+  datasets.name=tts_indo \
+  datasets.batch_size_per_gpu=8000 \
+  datasets.max_samples=64 \
+  datasets.num_workers=4 \
+  optim.epochs=10 \
+  optim.learning_rate=1e-5 \
+  optim.grad_accumulation_steps=2 \
+  ckpts.save_dir=ckpts/F5TTS_v1_Base_Mamba_Conservative_vocos_pinyin_tts_indo \
+  ckpts.logger=null
+```
+
+Useful notes:
+
+- The trainer now tolerates optimizer-state mismatch when the architecture changes, so resuming from an older 1-layer hybrid checkpoint into the current 2-layer setup is safer.
+- For early-stage finetuned checkpoints, `use_ema=False` may work better during inference.
+- If you want a GUI-based training flow, the upstream-compatible Gradio finetune app still exists.
+
+## Inference
+
+There are two practical routes in this repository:
+
+### 1. Notebook-based inference smoke test
+
+The Kaggle notebook includes an inference test cell that:
+
+- resolves a checkpoint,
+- ensures `vocab.txt` exists,
+- picks a reference audio from metadata,
+- synthesizes output text,
+- saves the generated waveform.
+
+### 2. Upstream-compatible CLI and Gradio
+
+Even though this repository is branded as GardenBunga, the CLI names remain:
+
+```bash
+f5-tts_infer-cli --help
+f5-tts_infer-gradio --help
 f5-tts_finetune-gradio
 ```
 
-Read [training & finetuning guidance](src/f5_tts/train) for more instructions.
+For more inference details, see:
 
+- [src/f5_tts/infer/README.md](./src/f5_tts/infer/README.md)
 
-## [Evaluation](src/f5_tts/eval)
+## Recommended Quick Start
 
+If you want the shortest path to a working experiment:
 
-## Development
+1. Install Python 3.11, PyTorch 2.8, and project dependencies.
+2. Use [notebook/traineo1_kaggle_clean.ipynb](./notebook/traineo1_kaggle_clean.ipynb) if you are on Kaggle.
+3. Prepare your CSV dataset with absolute audio paths.
+4. Train with [F5TTS_v1_Base_Mamba_Conservative.yaml](./src/f5_tts/configs/F5TTS_v1_Base_Mamba_Conservative.yaml).
+5. Run the notebook inference cell or use upstream CLI utilities for smoke testing.
 
-Use pre-commit to ensure code quality (will run linters and formatters automatically):
+## Evaluation
 
-```bash
-pip install pre-commit
-pre-commit install
-```
+Evaluation utilities from the upstream project are still available in:
 
-When making a pull request, before each commit, run: 
+- [src/f5_tts/eval](./src/f5_tts/eval)
 
-```bash
-pre-commit run --all-files
-```
+This includes infrastructure for objective evaluation such as WER, similarity, and MOS-related workflows depending on your setup.
 
-Note: Some model components have linting exceptions for E722 to accommodate tensor notation.
+## Compatibility Notes
 
+- Package name in `pyproject.toml` is still `f5-tts`.
+- Console entrypoints still use `f5-tts_*`.
+- This is intentional, to preserve compatibility with the upstream ecosystem while extending the repository for GardenBunga experiments.
 
 ## Acknowledgements
 
-- [E2-TTS](https://arxiv.org/abs/2406.18009) brilliant work, simple and effective
-- [Emilia](https://arxiv.org/abs/2407.05361), [WenetSpeech4TTS](https://arxiv.org/abs/2406.05763), [LibriTTS](https://arxiv.org/abs/1904.02882), [LJSpeech](https://keithito.com/LJ-Speech-Dataset/) valuable datasets
-- [lucidrains](https://github.com/lucidrains) initial CFM structure with also [bfs18](https://github.com/bfs18) for discussion
-- [SD3](https://arxiv.org/abs/2403.03206) & [Hugging Face diffusers](https://github.com/huggingface/diffusers) DiT and MMDiT code structure
-- [torchdiffeq](https://github.com/rtqichen/torchdiffeq) as ODE solver, [Vocos](https://huggingface.co/charactr/vocos-mel-24khz) and [BigVGAN](https://github.com/NVIDIA/BigVGAN) as vocoder
-- [FunASR](https://github.com/modelscope/FunASR), [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [UniSpeech](https://github.com/microsoft/UniSpeech), [SpeechMOS](https://github.com/tarepan/SpeechMOS) for evaluation tools
-- [ctc-forced-aligner](https://github.com/MahmoudAshraf97/ctc-forced-aligner) for speech edit test
-- [mrfakename](https://x.com/realmrfakename) huggingface space demo ~
-- [f5-tts-mlx](https://github.com/lucasnewman/f5-tts-mlx/tree/main) Implementation with MLX framework by [Lucas Newman](https://github.com/lucasnewman)
-- [F5-TTS-ONNX](https://github.com/DakeQQ/F5-TTS-ONNX) ONNX Runtime version by [DakeQQ](https://github.com/DakeQQ)
-- [Yuekai Zhang](https://github.com/yuekaizhang) Triton and TensorRT-LLM support ~
+This repository builds directly on the excellent upstream work:
 
-## Citation
-If our work and codebase is useful for you, please cite as:
-```
-@article{chen-etal-2024-f5tts,
-      title={F5-TTS: A Fairytaler that Fakes Fluent and Faithful Speech with Flow Matching}, 
-      author={Yushen Chen and Zhikang Niu and Ziyang Ma and Keqi Deng and Chunhui Wang and Jian Zhao and Kai Yu and Xie Chen},
-      journal={arXiv preprint arXiv:2410.06885},
-      year={2024},
-}
-```
+- [F5-TTS](https://github.com/SWivid/F5-TTS)
+- [E2-TTS](https://arxiv.org/abs/2406.18009)
+- [Mamba](https://github.com/state-spaces/mamba)
+- [Vocos](https://huggingface.co/charactr/vocos-mel-24khz)
+- [BigVGAN](https://github.com/NVIDIA/BigVGAN)
+
+We gratefully acknowledge the original F5-TTS authors and contributors for the foundation that made this research fork possible.
+
 ## License
 
-Our code is released under MIT License. The pre-trained models are licensed under the CC-BY-NC license due to the training data Emilia, which is an in-the-wild dataset. Sorry for any inconvenience this may cause.
+This repository is distributed under the MIT License. See [LICENSE](./LICENSE).
