@@ -26,7 +26,7 @@
 
 Project GardenBunga is a research fork of [F5-TTS](https://github.com/SWivid/F5-TTS) centered on Indonesian speech synthesis through multilingual knowledge transfer and efficient hybrid sequence modeling.
 
-The main idea in this repository is deliberately conservative: instead of replacing the whole backbone, we only swap a very small number of DiT attention blocks with Mamba SSM blocks while keeping the rest of the F5-TTS training and inference pipeline as intact as possible. The current default conservative configuration uses a 2-block Hybrid DiT-Mamba setup.
+The main idea in this repository is deliberately conservative: instead of replacing the whole backbone, we only swap a very small number of DiT attention blocks with Mamba SSM blocks while keeping the rest of the F5-TTS training and inference pipeline as intact as possible. The current default conservative configuration uses a 4-block Hybrid DiT-Mamba setup.
 
 This repository keeps the upstream package and CLI naming for compatibility. That means the project is called **GardenBunga**, but Python package and console commands still use the upstream `f5-tts` naming convention.
 
@@ -45,7 +45,7 @@ The current conservative configuration lives in [F5TTS_v1_Base_Mamba_Conservativ
 Key points:
 
 - Backbone: `DiT`
-- Hybrid blocks: `mamba_block_ids: [11, 14]`
+- Hybrid blocks: `mamba_block_ids: [7, 11, 14, 18]`
 - Mamba mode: bidirectional
 - Mamba init: `alpha = 0.0` for conservative blending startup
 - Vocoder path: standard F5-TTS pipeline
