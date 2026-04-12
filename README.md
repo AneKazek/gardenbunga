@@ -14,6 +14,14 @@
   A research-focused F5-TTS fork for efficient Indonesian speech synthesis with conservative Hybrid DiT-Mamba integration.
 </p>
 
+## Authors
+
+| Name | NRP |
+| --- | --- |
+| Muhammad Dzaky Haidar | 5054251039 |
+| Benedictus Ryu Gunawan | 5054251001 |
+| Muhammad Irzam Hafis Fabiansyah | 5054251024 |
+
 ## Overview
 
 Project GardenBunga is a research fork of [F5-TTS](https://github.com/SWivid/F5-TTS) centered on Indonesian speech synthesis through multilingual knowledge transfer and efficient hybrid sequence modeling.
@@ -43,14 +51,6 @@ Key points:
 - Vocoder path: standard F5-TTS pipeline
 
 This means the project is already configured to use Mamba in a limited, controlled way rather than performing a full architectural replacement.
-
-## Authors
-
-| Name | NRP |
-| --- | --- |
-| Muhammad Dzaky Haidar | 5054251039 |
-| Benedictus Ryu Gunawan | 5054251001 |
-| Muhammad Irzam Hafis Fabiansyah | 5054251024 |
 
 ## Repository Layout
 
