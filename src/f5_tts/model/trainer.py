@@ -255,10 +255,23 @@ class Trainer:
                 self.accelerator.unwrap_model(self.model),
                 checkpoint["model_state_dict"],
             )
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            if self.scheduler:
-                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            update = checkpoint["update"]
+            optimizer_state_loaded = True
+            try:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                if self.scheduler:
+                    self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            except (ValueError, RuntimeError) as exc:
+                optimizer_state_loaded = False
+                if self.is_main:
+                    print(
+                        "F5-TTS WARNING: Optimizer/scheduler state is incompatible with the current model "
+                        f"(likely due to architecture changes such as new Mamba blocks): {exc}"
+                    )
+                    print(
+                        "F5-TTS WARNING: Model weights were loaded, but optimizer and scheduler will start fresh "
+                        "from update 0."
+                    )
+            update = checkpoint["update"] if optimizer_state_loaded else 0
         else:
             checkpoint["model_state_dict"] = {
                 k.replace("ema_model.", ""): v

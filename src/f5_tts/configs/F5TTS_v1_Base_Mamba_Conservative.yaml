@@ -35,7 +35,7 @@ model:
     attn_backend: torch
     attn_mask_enabled: False
     checkpoint_activations: False
-    mamba_block_ids: [11]
+    mamba_block_ids: [11, 14]
     mamba_bidirectional: True
     mamba_d_state: 64
     mamba_d_conv: 4
