@@ -1,9 +1,13 @@
 import argparse
 import json
+import os
+import sys
 import time
 from contextlib import nullcontext
 
 import torch
+
+sys.path.append(os.getcwd())
 
 from f5_tts.model import CFM, DiT
 
@@ -305,11 +309,18 @@ def main():
     parser.add_argument("--warmup-iters", type=int, default=1)
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--skip-train-step", action="store_true")
+    parser.add_argument("--baseline-attn-backend", default="torch", choices=["torch", "flash_attn"])
+    parser.add_argument("--hybrid-attn-backend", default="torch", choices=["torch", "flash_attn"])
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    baseline = build_model(BASE_ARCH)
-    hybrid = build_model(HYBRID_ARCH)
+    baseline_arch = dict(BASE_ARCH)
+    hybrid_arch = dict(HYBRID_ARCH)
+    baseline_arch["attn_backend"] = args.baseline_attn_backend
+    hybrid_arch["attn_backend"] = args.hybrid_attn_backend
+
+    baseline = build_model(baseline_arch)
+    hybrid = build_model(hybrid_arch)
     teacher = build_model(BASE_ARCH)
     teacher.requires_grad_(False)
 

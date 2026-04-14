@@ -25,11 +25,14 @@ def get_args():
     parser.add_argument("-e", "--eval_task", type=str, default="wer", choices=["sim", "wer"])
     parser.add_argument("-l", "--lang", type=str, default="en")
     parser.add_argument("-g", "--gen_wav_dir", type=str, required=True)
+    parser.add_argument("--meta_file", type=str, default=None)
     parser.add_argument("-p", "--librispeech_test_clean_path", type=str, required=True)
     parser.add_argument(
         "-n", "--gpu_nums", type=str, default="8", help="Number of GPUs to use (e.g., 8) or GPU list (e.g., [0,1,2,3])"
     )
     parser.add_argument("--local", action="store_true", help="Use local custom checkpoint directory")
+    parser.add_argument("--asr_ckpt_dir", type=str, default=None)
+    parser.add_argument("--wavlm_ckpt_dir", type=str, default=None)
     return parser.parse_args()
 
 
@@ -52,7 +55,7 @@ def main():
     lang = args.lang
     librispeech_test_clean_path = args.librispeech_test_clean_path  # test-clean path
     gen_wav_dir = args.gen_wav_dir
-    metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
+    metalst = args.meta_file or (rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst")
 
     gpus = parse_gpu_nums(args.gpu_nums)
     test_set = get_librispeech_test(metalst, gen_wav_dir, gpus, librispeech_test_clean_path)
@@ -62,11 +65,13 @@ def main():
     # test_set = get_librispeech_test(metalst, gen_wav_dir, gpus, librispeech_test_clean_path, eval_ground_truth = True)  # eval ground truth
 
     local = args.local
-    if local:  # use local custom checkpoint dir
+    if args.asr_ckpt_dir is not None:
+        asr_ckpt_dir = args.asr_ckpt_dir
+    elif local:  # use local custom checkpoint dir
         asr_ckpt_dir = "../checkpoints/Systran/faster-whisper-large-v3"
     else:
         asr_ckpt_dir = ""  # auto download to cache dir
-    wavlm_ckpt_dir = "../checkpoints/UniSpeech/wavlm_large_finetune.pth"
+    wavlm_ckpt_dir = args.wavlm_ckpt_dir or "../checkpoints/UniSpeech/wavlm_large_finetune.pth"
 
     # --------------------------------------------------------------------------
 

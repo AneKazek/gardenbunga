@@ -40,8 +40,11 @@ def main():
     parser = argparse.ArgumentParser(description="batch inference")
 
     parser.add_argument("-s", "--seed", default=None, type=int)
-    parser.add_argument("-n", "--expname", required=True)
+    parser.add_argument("-n", "--expname", default=None)
     parser.add_argument("-c", "--ckptstep", default=1250000, type=int)
+    parser.add_argument("--config_path", default=None, type=str)
+    parser.add_argument("--ckpt_path", default=None, type=str)
+    parser.add_argument("--output_dir", default=None, type=str)
 
     parser.add_argument("-nfe", "--nfestep", default=32, type=int)
     parser.add_argument("-o", "--odemethod", default="euler")
@@ -51,6 +54,7 @@ def main():
     parser.add_argument(
         "-p", "--librispeech_test_clean_path", default=f"{rel_path}/data/LibriSpeech/test-clean", type=str
     )
+    parser.add_argument("--meta_file", default=None, type=str)
 
     parser.add_argument("--local", action="store_true", help="Use local vocoder checkpoint directory")
 
@@ -59,12 +63,16 @@ def main():
     seed = args.seed
     exp_name = args.expname
     ckpt_step = args.ckptstep
+    config_path = args.config_path
+    ckpt_path_override = args.ckpt_path
+    output_dir_override = args.output_dir
 
     nfe_step = args.nfestep
     ode_method = args.odemethod
     sway_sampling_coef = args.swaysampling
 
     testset = args.testset
+    meta_file = args.meta_file
 
     infer_batch_size = 1  # max frames. 1 for ddp single inference (recommended)
     cfg_strength = 2.0
@@ -72,7 +80,16 @@ def main():
     use_truth_duration = False
     no_ref_audio = False
 
-    model_cfg = OmegaConf.load(str(files("f5_tts").joinpath(f"configs/{exp_name}.yaml")))
+    if config_path is not None:
+        model_cfg_path = config_path
+        if exp_name is None:
+            exp_name = os.path.splitext(os.path.basename(config_path))[0]
+    elif exp_name is not None:
+        model_cfg_path = str(files("f5_tts").joinpath(f"configs/{exp_name}.yaml"))
+    else:
+        raise ValueError("Either --expname or --config_path must be provided.")
+
+    model_cfg = OmegaConf.load(model_cfg_path)
     model_cls = get_class(f"f5_tts.model.{model_cfg.model.backbone}")
     model_arc = model_cfg.model.arch
 
@@ -87,28 +104,31 @@ def main():
     n_fft = model_cfg.model.mel_spec.n_fft
 
     if testset == "ls_pc_test_clean":
-        metalst = rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst"
+        metalst = meta_file or (rel_path + "/data/librispeech_pc_test_clean_cross_sentence.lst")
         librispeech_test_clean_path = args.librispeech_test_clean_path
         metainfo = get_librispeech_test_clean_metainfo(metalst, librispeech_test_clean_path)
 
     elif testset == "seedtts_test_zh":
-        metalst = rel_path + "/data/seedtts_testset/zh/meta.lst"
+        metalst = meta_file or (rel_path + "/data/seedtts_testset/zh/meta.lst")
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     elif testset == "seedtts_test_en":
-        metalst = rel_path + "/data/seedtts_testset/en/meta.lst"
+        metalst = meta_file or (rel_path + "/data/seedtts_testset/en/meta.lst")
         metainfo = get_seedtts_testset_metainfo(metalst)
 
     # path to save genereted wavs
-    output_dir = (
-        f"{rel_path}/"
-        f"results/{exp_name}_{ckpt_step}/{testset}/"
-        f"seed{seed}_{ode_method}_nfe{nfe_step}_{mel_spec_type}"
-        f"{f'_ss{sway_sampling_coef}' if sway_sampling_coef else ''}"
-        f"_cfg{cfg_strength}_speed{speed}"
-        f"{'_gt-dur' if use_truth_duration else ''}"
-        f"{'_no-ref-audio' if no_ref_audio else ''}"
-    )
+    if output_dir_override is not None:
+        output_dir = output_dir_override
+    else:
+        output_dir = (
+            f"{rel_path}/"
+            f"results/{exp_name}_{ckpt_step}/{testset}/"
+            f"seed{seed}_{ode_method}_nfe{nfe_step}_{mel_spec_type}"
+            f"{f'_ss{sway_sampling_coef}' if sway_sampling_coef else ''}"
+            f"_cfg{cfg_strength}_speed{speed}"
+            f"{'_gt-dur' if use_truth_duration else ''}"
+            f"{'_no-ref-audio' if no_ref_audio else ''}"
+        )
 
     # -------------------------------------------------#
 
@@ -153,20 +173,23 @@ def main():
         vocab_char_map=vocab_char_map,
     ).to(device)
 
-    ckpt_prefix = rel_path + f"/ckpts/{exp_name}/model_{ckpt_step}"
-    if os.path.exists(ckpt_prefix + ".pt"):
-        ckpt_path = ckpt_prefix + ".pt"
-    elif os.path.exists(ckpt_prefix + ".safetensors"):
-        ckpt_path = ckpt_prefix + ".safetensors"
+    if ckpt_path_override is not None:
+        ckpt_path = ckpt_path_override
     else:
-        print("Loading from self-organized training checkpoints rather than released pretrained.")
-        ckpt_prefix = rel_path + f"/{model_cfg.ckpts.save_dir}/model_{ckpt_step}"
+        ckpt_prefix = rel_path + f"/ckpts/{exp_name}/model_{ckpt_step}"
         if os.path.exists(ckpt_prefix + ".pt"):
             ckpt_path = ckpt_prefix + ".pt"
         elif os.path.exists(ckpt_prefix + ".safetensors"):
             ckpt_path = ckpt_prefix + ".safetensors"
         else:
-            raise ValueError("The checkpoint does not exist or cannot be found in given location.")
+            print("Loading from self-organized training checkpoints rather than released pretrained.")
+            ckpt_prefix = rel_path + f"/{model_cfg.ckpts.save_dir}/model_{ckpt_step}"
+            if os.path.exists(ckpt_prefix + ".pt"):
+                ckpt_path = ckpt_prefix + ".pt"
+            elif os.path.exists(ckpt_prefix + ".safetensors"):
+                ckpt_path = ckpt_prefix + ".safetensors"
+            else:
+                raise ValueError("The checkpoint does not exist or cannot be found in given location.")
 
     dtype = torch.float32 if mel_spec_type == "bigvgan" else None
     model = load_checkpoint(model, ckpt_path, device, dtype=dtype, use_ema=use_ema)
