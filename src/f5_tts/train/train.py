@@ -20,6 +20,7 @@ def main(model_cfg):
     model_arc = model_cfg.model.arch
     tokenizer = model_cfg.model.tokenizer
     mel_spec_type = model_cfg.model.mel_spec.mel_spec_type
+    distill_cfg = OmegaConf.to_container(model_cfg.model.get("distill", {}), resolve=True) or {}
 
     wandb_project = model_cfg.ckpts.get("wandb_project", "CFM-TTS")
     wandb_run_name = model_cfg.ckpts.get(
@@ -41,12 +42,28 @@ def main(model_cfg):
         mel_spec_kwargs=model_cfg.model.mel_spec,
         vocab_char_map=vocab_char_map,
     )
+    teacher_model = None
+    if distill_cfg.get("enabled", False):
+        teacher_arc = OmegaConf.to_container(model_arc, resolve=True)
+        for key in [key for key in teacher_arc if key.startswith("mamba_")]:
+            teacher_arc.pop(key)
+        teacher_arc["checkpoint_activations"] = False
+        teacher_model = CFM(
+            transformer=model_cls(
+                **teacher_arc,
+                text_num_embeds=vocab_size,
+                mel_dim=model_cfg.model.mel_spec.n_mel_channels,
+            ),
+            mel_spec_kwargs=model_cfg.model.mel_spec,
+            vocab_char_map=vocab_char_map,
+        )
 
     # init trainer
     trainer = Trainer(
         model,
         epochs=model_cfg.optim.epochs,
         learning_rate=model_cfg.optim.learning_rate,
+        weight_decay=model_cfg.optim.get("weight_decay", 0.01),
         num_warmup_updates=model_cfg.optim.num_warmup_updates,
         save_per_updates=model_cfg.ckpts.save_per_updates,
         keep_last_n_checkpoints=model_cfg.ckpts.keep_last_n_checkpoints,
@@ -56,6 +73,8 @@ def main(model_cfg):
         max_samples=model_cfg.datasets.max_samples,
         grad_accumulation_steps=model_cfg.optim.grad_accumulation_steps,
         max_grad_norm=model_cfg.optim.max_grad_norm,
+        mixed_precision=model_cfg.optim.get("mixed_precision", "auto"),
+        accelerate_kwargs=OmegaConf.to_container(model_cfg.optim.get("accelerate_kwargs", {}), resolve=True) or {},
         logger=model_cfg.ckpts.logger,
         wandb_project=wandb_project,
         wandb_run_name=wandb_run_name,
@@ -66,6 +85,12 @@ def main(model_cfg):
         mel_spec_type=mel_spec_type,
         is_local_vocoder=model_cfg.model.vocoder.is_local,
         local_vocoder_path=model_cfg.model.vocoder.local_path,
+        teacher_model=teacher_model,
+        teacher_checkpoint_path=model_cfg.ckpts.get("teacher_checkpoint", None),
+        student_init_checkpoint_path=model_cfg.ckpts.get("student_init_checkpoint", None),
+        teacher_use_ema=model_cfg.ckpts.get("load_ema_teacher", True),
+        student_init_use_ema=model_cfg.ckpts.get("load_ema_student_init", True),
+        distill_config=distill_cfg,
         model_cfg_dict=OmegaConf.to_container(model_cfg, resolve=True),
     )
 

@@ -29,6 +29,7 @@ class Trainer:
         model: CFM,
         epochs,
         learning_rate,
+        weight_decay=0.01,
         num_warmup_updates=20000,
         save_per_updates=1000,
         keep_last_n_checkpoints: int = -1,  # -1 to keep all, 0 to not save intermediate, > 0 to keep last N checkpoints
@@ -46,15 +47,25 @@ class Trainer:
         wandb_resume_id: str = None,
         log_samples: bool = False,
         last_per_updates=None,
+        mixed_precision: str | None = "auto",
         accelerate_kwargs: dict = dict(),
         ema_kwargs: dict = dict(),
         bnb_optimizer: bool = False,
         mel_spec_type: str = "vocos",  # "vocos" | "bigvgan"
         is_local_vocoder: bool = False,  # use local path vocoder
         local_vocoder_path: str = "",  # local vocoder path
+        teacher_model: CFM | None = None,
+        teacher_checkpoint_path: str | None = None,
+        student_init_checkpoint_path: str | None = None,
+        teacher_use_ema: bool = True,
+        student_init_use_ema: bool = True,
+        distill_config: dict = dict(),
         model_cfg_dict: dict = dict(),  # training config
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        accelerate_kwargs = dict(accelerate_kwargs)
+        mixed_precision = self._resolve_mixed_precision(default(accelerate_kwargs.get("mixed_precision"), mixed_precision))
+        accelerate_kwargs["mixed_precision"] = mixed_precision
 
         if logger == "wandb" and not wandb.api.api_key:
             logger = None
@@ -78,6 +89,7 @@ class Trainer:
                 model_cfg_dict = {
                     "epochs": epochs,
                     "learning_rate": learning_rate,
+                    "weight_decay": weight_decay,
                     "num_warmup_updates": num_warmup_updates,
                     "batch_size_per_gpu": batch_size_per_gpu,
                     "batch_size_type": batch_size_type,
@@ -86,6 +98,7 @@ class Trainer:
                     "max_grad_norm": max_grad_norm,
                     "noise_scheduler": noise_scheduler,
                     "bnb_optimizer": bnb_optimizer,
+                    "mixed_precision": mixed_precision,
                 }
             model_cfg_dict["gpus"] = self.accelerator.num_processes
             self.accelerator.init_trackers(
@@ -134,18 +147,151 @@ class Trainer:
         self.noise_scheduler = noise_scheduler
 
         self.duration_predictor = duration_predictor
+        self.teacher_model = teacher_model
+        self.teacher_checkpoint_path = teacher_checkpoint_path
+        self.student_init_checkpoint_path = default(student_init_checkpoint_path, teacher_checkpoint_path)
+        self.teacher_use_ema = teacher_use_ema
+        self.student_init_use_ema = student_init_use_ema
+        self.distill_config = dict(default(distill_config, {}))
+        self.mixed_precision = mixed_precision
 
         if bnb_optimizer:
             import bitsandbytes as bnb
 
-            self.optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate)
+            self.optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         else:
-            self.optimizer = AdamW(model.parameters(), lr=learning_rate, fused=True)
+            self.optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=True)
         self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+        if self.teacher_model is not None:
+            self.teacher_model.requires_grad_(False)
+            self.teacher_model.eval()
+            self.teacher_model.to(self.accelerator.device)
+            teacher_checkpoint_path = default(self.teacher_checkpoint_path, self.student_init_checkpoint_path)
+            if not exists(teacher_checkpoint_path):
+                raise ValueError("teacher_checkpoint_path or student_init_checkpoint_path must be set when distillation is enabled.")
+            self._load_model_from_path(
+                self.teacher_model,
+                teacher_checkpoint_path,
+                use_ema=self.teacher_use_ema,
+                description="teacher",
+            )
 
     @property
     def is_main(self):
         return self.accelerator.is_main_process
+
+    def _resolve_mixed_precision(self, mixed_precision: str | None) -> str:
+        if mixed_precision in [None, "auto"]:
+            if torch.cuda.is_available():
+                return "bf16" if torch.cuda.is_bf16_supported() else "fp16"
+            return "no"
+        return mixed_precision
+
+    def _resolve_checkpoint_reference(self, checkpoint_path: str) -> str:
+        if "://" in checkpoint_path:
+            from cached_path import cached_path
+
+            return str(cached_path(checkpoint_path))
+        return checkpoint_path
+
+    def _load_checkpoint_file(self, checkpoint_path: str):
+        checkpoint_path = self._resolve_checkpoint_reference(checkpoint_path)
+        if checkpoint_path.endswith(".safetensors"):
+            from safetensors.torch import load_file
+
+            checkpoint = load_file(checkpoint_path, device="cpu")
+        else:
+            checkpoint = torch.load(checkpoint_path, weights_only=True, map_location="cpu")
+        return checkpoint, checkpoint_path
+
+    def _extract_model_state_dict(self, checkpoint: dict[str, torch.Tensor], use_ema: bool) -> dict[str, torch.Tensor]:
+        if "ema_model_state_dict" in checkpoint and use_ema:
+            state_dict = {
+                k.replace("ema_model.", ""): v
+                for k, v in checkpoint["ema_model_state_dict"].items()
+                if k not in ["initted", "update", "step"]
+            }
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+
+        for key in ["mel_spec.mel_stft.mel_scale.fb", "mel_spec.mel_stft.spectrogram.window"]:
+            if key in state_dict:
+                del state_dict[key]
+
+        return state_dict
+
+    def _load_model_from_path(
+        self,
+        model: torch.nn.Module,
+        checkpoint_path: str,
+        *,
+        use_ema: bool,
+        description: str,
+        extra_allowed_missing_prefixes: tuple[str, ...] = tuple(),
+    ) -> None:
+        checkpoint, resolved_path = self._load_checkpoint_file(checkpoint_path)
+        state_dict = self._extract_model_state_dict(checkpoint, use_ema=use_ema)
+        load_state_dict_with_allowed_missing(
+            model,
+            state_dict,
+            extra_allowed_missing_prefixes=extra_allowed_missing_prefixes,
+        )
+        if self.is_main:
+            print(f"Loaded {description} checkpoint from {resolved_path}")
+        del checkpoint
+        gc.collect()
+
+    def _find_latest_checkpoint(self) -> str | None:
+        if not exists(self.checkpoint_path) or not os.path.exists(self.checkpoint_path):
+            return None
+
+        checkpoint_files = [f for f in os.listdir(self.checkpoint_path) if f.endswith((".pt", ".safetensors"))]
+        if not checkpoint_files:
+            return None
+
+        if "model_last.pt" in checkpoint_files:
+            return os.path.join(self.checkpoint_path, "model_last.pt")
+
+        all_checkpoints = [
+            f for f in checkpoint_files if (f.startswith("model_") or f.startswith("pretrained_"))
+        ]
+        training_checkpoints = [f for f in all_checkpoints if f.startswith("model_") and f != "model_last.pt"]
+        if training_checkpoints:
+            latest_checkpoint = sorted(training_checkpoints, key=lambda x: int("".join(filter(str.isdigit, x))))[-1]
+            return os.path.join(self.checkpoint_path, latest_checkpoint)
+
+        pretrained_checkpoints = [f for f in all_checkpoints if f.startswith("pretrained_")]
+        if pretrained_checkpoints:
+            return os.path.join(self.checkpoint_path, sorted(pretrained_checkpoints)[-1])
+
+        return None
+
+    def _collect_mamba_metrics(self) -> dict[str, float]:
+        metrics = {}
+        transformer = self.accelerator.unwrap_model(self.model).transformer
+        for block_id in getattr(transformer, "mamba_block_ids", tuple()):
+            block = transformer.transformer_blocks[block_id]
+            if block.last_mamba_metrics is None:
+                continue
+
+            prefix = f"mamba/block_{block_id}"
+            metrics[f"{prefix}/alpha"] = block.last_mamba_metrics["alpha"]
+            metrics[f"{prefix}/output_scale"] = block.last_mamba_metrics["output_scale"]
+            metrics[f"{prefix}/norm_ratio"] = block.last_mamba_metrics["norm_ratio"]
+            metrics[f"{prefix}/executed"] = block.last_mamba_metrics["executed"]
+
+            grad_norm = 0.0
+            for name, param in block.mamba_attn.named_parameters():
+                if name == "output_scale":
+                    continue
+                if param.grad is not None:
+                    grad_norm = float(param.grad.detach().float().norm().item())
+                break
+            metrics[f"{prefix}/grad_norm"] = grad_norm
+
+        return metrics
 
     def save_checkpoint(self, update, last=False):
         self.accelerator.wait_for_everyone()
@@ -183,62 +329,41 @@ class Trainer:
                         print(f"Removed old checkpoint: {oldest_checkpoint}")
 
     def load_checkpoint(self):
-        if (
-            not exists(self.checkpoint_path)
-            or not os.path.exists(self.checkpoint_path)
-            or not any(filename.endswith((".pt", ".safetensors")) for filename in os.listdir(self.checkpoint_path))
-        ):
+        latest_checkpoint = self._find_latest_checkpoint()
+        if latest_checkpoint is None:
+            if exists(self.student_init_checkpoint_path):
+                self._load_model_from_path(
+                    self.accelerator.unwrap_model(self.model),
+                    self.student_init_checkpoint_path,
+                    use_ema=self.student_init_use_ema,
+                    description="student init",
+                )
+                if self.is_main:
+                    self.ema_model.copy_params_from_model_to_ema()
             return 0
 
         self.accelerator.wait_for_everyone()
-        if "model_last.pt" in os.listdir(self.checkpoint_path):
-            latest_checkpoint = "model_last.pt"
-        else:
-            # Updated to consider pretrained models for loading but prioritize training checkpoints
-            all_checkpoints = [
-                f
-                for f in os.listdir(self.checkpoint_path)
-                if (f.startswith("model_") or f.startswith("pretrained_")) and f.endswith((".pt", ".safetensors"))
-            ]
-
-            # First try to find regular training checkpoints
-            training_checkpoints = [f for f in all_checkpoints if f.startswith("model_") and f != "model_last.pt"]
-            if training_checkpoints:
-                latest_checkpoint = sorted(
-                    training_checkpoints,
-                    key=lambda x: int("".join(filter(str.isdigit, x))),
-                )[-1]
-            else:
-                # If no training checkpoints, use pretrained model
-                latest_checkpoint = next(f for f in all_checkpoints if f.startswith("pretrained_"))
-
-        if latest_checkpoint.endswith(".safetensors"):  # always a pretrained checkpoint
-            from safetensors.torch import load_file
-
-            checkpoint = load_file(f"{self.checkpoint_path}/{latest_checkpoint}", device="cpu")
-            checkpoint = {"ema_model_state_dict": checkpoint}
-        elif latest_checkpoint.endswith(".pt"):
-            # checkpoint = torch.load(f"{self.checkpoint_path}/{latest_checkpoint}", map_location=self.accelerator.device)  # rather use accelerator.load_state ಥ_ಥ
-            checkpoint = torch.load(
-                f"{self.checkpoint_path}/{latest_checkpoint}", weights_only=True, map_location="cpu"
-            )
-
-        # patch for backward compatibility, 305e3ea
-        for key in ["ema_model.mel_spec.mel_stft.mel_scale.fb", "ema_model.mel_spec.mel_stft.spectrogram.window"]:
-            if key in checkpoint["ema_model_state_dict"]:
-                del checkpoint["ema_model_state_dict"][key]
+        checkpoint, resolved_path = self._load_checkpoint_file(latest_checkpoint)
+        if self.is_main:
+            print(f"Loading training state from {resolved_path}")
 
         model_allowed_missing = get_allowed_missing_state_dict_prefixes(self.accelerator.unwrap_model(self.model))
         ema_allowed_missing = model_allowed_missing + tuple(f"ema_model.{prefix}" for prefix in model_allowed_missing)
 
-        if self.is_main:
-            load_state_dict_with_allowed_missing(
-                self.ema_model,
-                checkpoint["ema_model_state_dict"],
-                extra_allowed_missing_prefixes=ema_allowed_missing,
-            )
+        is_training_checkpoint = "update" in checkpoint or "step" in checkpoint
 
-        if "update" in checkpoint or "step" in checkpoint:
+        if is_training_checkpoint:
+            for key in ["ema_model.mel_spec.mel_stft.mel_scale.fb", "ema_model.mel_spec.mel_stft.spectrogram.window"]:
+                if key in checkpoint["ema_model_state_dict"]:
+                    del checkpoint["ema_model_state_dict"][key]
+
+            if self.is_main:
+                load_state_dict_with_allowed_missing(
+                    self.ema_model,
+                    checkpoint["ema_model_state_dict"],
+                    extra_allowed_missing_prefixes=ema_allowed_missing,
+                )
+
             # patch for backward compatibility, with before f992c4e
             if "step" in checkpoint:
                 checkpoint["update"] = checkpoint["step"] // self.grad_accumulation_steps
@@ -273,15 +398,12 @@ class Trainer:
                     )
             update = checkpoint["update"] if optimizer_state_loaded else 0
         else:
-            checkpoint["model_state_dict"] = {
-                k.replace("ema_model.", ""): v
-                for k, v in checkpoint["ema_model_state_dict"].items()
-                if k not in ["initted", "update", "step"]
-            }
             load_state_dict_with_allowed_missing(
                 self.accelerator.unwrap_model(self.model),
-                checkpoint["model_state_dict"],
+                self._extract_model_state_dict(checkpoint, use_ema=self.student_init_use_ema),
             )
+            if self.is_main:
+                self.ema_model.copy_params_from_model_to_ema()
             update = 0
 
         del checkpoint
@@ -367,6 +489,8 @@ class Trainer:
 
         for epoch in range(skipped_epoch, self.epochs):
             self.model.train()
+            if self.teacher_model is not None:
+                self.teacher_model.eval()
             if exists(resumable_with_seed) and epoch == skipped_epoch:
                 progress_bar_initial = math.ceil(skipped_batch / self.grad_accumulation_steps)
                 current_dataloader = skipped_dataloader
@@ -391,16 +515,37 @@ class Trainer:
                     text_inputs = batch["text"]
                     mel_spec = batch["mel"].permute(0, 2, 1)
                     mel_lengths = batch["mel_lengths"]
+                    step_metrics = {}
 
                     # TODO. add duration predictor training
                     if self.duration_predictor is not None and self.accelerator.is_local_main_process:
                         dur_loss = self.duration_predictor(mel_spec, lens=batch.get("durations"))
                         self.accelerator.log({"duration loss": dur_loss.item()}, step=global_update)
 
-                    loss, cond, pred = self.model(
-                        mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
-                    )
+                    with self.accelerator.autocast():
+                        loss, cond, pred, loss_breakdown = self.model(
+                            mel_spec,
+                            text=text_inputs,
+                            lens=mel_lengths,
+                            noise_scheduler=self.noise_scheduler,
+                            teacher_model=self.teacher_model,
+                            distill_config=self.distill_config,
+                            return_metadata=True,
+                        )
                     self.accelerator.backward(loss)
+
+                    if self.accelerator.sync_gradients:
+                        step_metrics.update(
+                            {
+                                "loss": float(loss.detach().item()),
+                                "flow_matching_loss": loss_breakdown["flow_matching_loss"],
+                                "hidden_distill_loss": loss_breakdown["hidden_distill_loss"],
+                                "output_distill_loss": loss_breakdown["output_distill_loss"],
+                            }
+                        )
+                        for layer_id, layer_loss in loss_breakdown["hidden_distill_by_layer"].items():
+                            step_metrics[f"hidden_distill/layer_{layer_id}"] = layer_loss
+                        step_metrics.update(self._collect_mamba_metrics())
 
                     if self.max_grad_norm > 0 and self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -417,13 +562,12 @@ class Trainer:
                     progress_bar.update(1)
                     progress_bar.set_postfix(update=str(global_update), loss=loss.item())
 
-                if self.accelerator.is_local_main_process:
-                    self.accelerator.log(
-                        {"loss": loss.item(), "lr": self.scheduler.get_last_lr()[0]}, step=global_update
-                    )
-                if self.logger == "tensorboard" and self.accelerator.is_main_process:
-                    self.writer.add_scalar("loss", loss.item(), global_update)
-                    self.writer.add_scalar("lr", self.scheduler.get_last_lr()[0], global_update)
+                if self.accelerator.is_local_main_process and self.accelerator.sync_gradients:
+                    step_metrics["lr"] = self.scheduler.get_last_lr()[0]
+                    self.accelerator.log(step_metrics, step=global_update)
+                if self.logger == "tensorboard" and self.accelerator.is_main_process and self.accelerator.sync_gradients:
+                    for key, value in step_metrics.items():
+                        self.writer.add_scalar(key, value, global_update)
 
                 if global_update % self.last_per_updates == 0 and self.accelerator.sync_gradients:
                     self.save_checkpoint(global_update, last=True)

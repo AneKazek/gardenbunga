@@ -29,6 +29,7 @@ class ConservativeMambaMixer(nn.Module):
         d_conv: int = 4,
         expand: int = 1,
         bidirectional: bool = True,
+        output_scale_init: float = 1e-3,
     ):
         super().__init__()
 
@@ -43,8 +44,7 @@ class ConservativeMambaMixer(nn.Module):
         self.fwd = Mamba2(d_model=dim, d_state=d_state, d_conv=d_conv, expand=expand)
         self.bwd = Mamba2(d_model=dim, d_state=d_state, d_conv=d_conv, expand=expand) if bidirectional else None
 
-        # Start with a silent student branch so a pretrained attention block keeps its behavior.
-        self.output_scale = nn.Parameter(torch.zeros(1))
+        self.output_scale = nn.Parameter(torch.full((1,), float(output_scale_init)))
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         x = _apply_sequence_mask(x, mask)

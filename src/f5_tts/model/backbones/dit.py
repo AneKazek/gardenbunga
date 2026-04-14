@@ -209,7 +209,8 @@ class DiT(nn.Module):
         mamba_d_state: int = 64,
         mamba_d_conv: int = 4,
         mamba_expand: int = 1,
-        mamba_alpha_init: float = 0.0,
+        mamba_alpha_init: float = 0.02,
+        mamba_output_scale_init: float = 1e-3,
     ):
         super().__init__()
 
@@ -256,6 +257,7 @@ class DiT(nn.Module):
                 expand=mamba_expand,
                 bidirectional=mamba_bidirectional,
                 alpha_init=mamba_alpha_init,
+                output_scale_init=mamba_output_scale_init,
             )
         self.long_skip_connection = nn.Linear(dim * 2, dim, bias=False) if long_skip_connection else None
 
@@ -333,6 +335,13 @@ class DiT(nn.Module):
                 allowed_missing.append(f"transformer_blocks.{block_id}.{prefix}")
         return tuple(allowed_missing)
 
+    def get_default_hidden_distill_layers(self) -> tuple[int, ...]:
+        layers = list(self.mamba_block_ids)
+        last_layer = self.depth - 1
+        if last_layer not in layers:
+            layers.append(last_layer)
+        return tuple(sorted(layers))
+
     def forward(
         self,
         x: float["b n d"],  # nosied input audio
@@ -344,10 +353,16 @@ class DiT(nn.Module):
         drop_text: bool = False,  # cfg for text
         cfg_infer: bool = False,  # cfg inference, pack cond & uncond forward
         cache: bool = False,
+        capture_hidden_layers: tuple[int, ...] | list[int] | None = None,
+        return_hidden_states: bool = False,
     ):
         batch, seq_len = x.shape[0], x.shape[1]
         if time.ndim == 0:
             time = time.repeat(batch)
+
+        capture_hidden_layers = _normalize_block_ids(capture_hidden_layers, self.depth)
+        capture_hidden_layer_set = set(capture_hidden_layers)
+        hidden_states = {} if return_hidden_states else None
 
         # t: conditioning time, text: text, x: noised audio + cond audio + text
         t = self.time_embed(time)
@@ -371,12 +386,14 @@ class DiT(nn.Module):
         if self.long_skip_connection is not None:
             residual = x
 
-        for block in self.transformer_blocks:
+        for block_id, block in enumerate(self.transformer_blocks):
             if self.checkpoint_activations:
                 # https://pytorch.org/docs/stable/checkpoint.html#torch.utils.checkpoint.checkpoint
                 x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, t, mask, rope, use_reentrant=False)
             else:
                 x = block(x, t, mask=mask, rope=rope)
+            if hidden_states is not None and block_id in capture_hidden_layer_set:
+                hidden_states[block_id] = x
 
         if self.long_skip_connection is not None:
             x = self.long_skip_connection(torch.cat((x, residual), dim=-1))
@@ -384,4 +401,6 @@ class DiT(nn.Module):
         x = self.norm_out(x, t)
         output = self.proj_out(x)
 
+        if return_hidden_states:
+            return output, hidden_states
         return output

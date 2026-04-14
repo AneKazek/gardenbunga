@@ -742,6 +742,7 @@ class DiTBlock(nn.Module):
         self.mamba_attn = None
         self.attn_blend_alpha = None
         self.mamba_teacher_enabled = True
+        self.last_mamba_metrics = None
 
     def enable_mamba_mixer(
         self,
@@ -751,7 +752,8 @@ class DiTBlock(nn.Module):
         d_conv: int = 4,
         expand: int = 1,
         bidirectional: bool = True,
-        alpha_init: float = 0.0,
+        alpha_init: float = 0.02,
+        output_scale_init: float = 1e-3,
     ):
         from f5_tts.model.hybrid_mamba import ConservativeMambaMixer
 
@@ -761,6 +763,7 @@ class DiTBlock(nn.Module):
             d_conv=d_conv,
             expand=expand,
             bidirectional=bidirectional,
+            output_scale_init=output_scale_init,
         )
         self.attn_blend_alpha = nn.Parameter(torch.tensor(float(alpha_init)))
         self.mamba_teacher_enabled = True
@@ -773,21 +776,32 @@ class DiTBlock(nn.Module):
             return tuple()
         return ("mamba_attn.", "attn_blend_alpha")
 
+    def _masked_l2_norm(self, x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+        if mask is not None:
+            x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
+        return x.float().norm(p=2)
+
     def forward(self, x, t, mask=None, rope=None):  # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
 
         # attention
         attn_output = self.attn(x=norm, mask=mask, rope=rope)
+        self.last_mamba_metrics = None
         if self.mamba_attn is not None:
             alpha = self.attn_blend_alpha.clamp(0.0, 1.0)
-            if self.mamba_teacher_enabled:
-                # Keep alpha=0 parity exact by not executing the new branch at all.
-                if alpha.detach().item() > 0.0:
-                    mamba_output = self.mamba_attn(norm, mask=mask)
-                    attn_output = attn_output + alpha * (mamba_output - attn_output)
-            else:
-                attn_output = self.mamba_attn(norm, mask=mask)
+            mamba_output = self.mamba_attn(norm, mask=mask)
+            attn_norm = self._masked_l2_norm(attn_output.detach(), mask)
+            mamba_norm = self._masked_l2_norm(mamba_output.detach(), mask)
+            self.last_mamba_metrics = {
+                "executed": 1.0,
+                "alpha": float(alpha.detach().item()),
+                "output_scale": float(self.mamba_attn.output_scale.detach().item()),
+                "attn_norm": float(attn_norm.item()),
+                "mamba_norm": float(mamba_norm.item()),
+                "norm_ratio": float((mamba_norm / attn_norm.clamp(min=1e-8)).item()),
+            }
+            attn_output = attn_output + alpha * (mamba_output - attn_output)
 
         # process attention output for input x
         x = x + gate_msa.unsqueeze(1) * attn_output

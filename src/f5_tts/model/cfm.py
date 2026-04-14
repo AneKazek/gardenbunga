@@ -80,6 +80,30 @@ class CFM(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
+    def _masked_mse(self, student: torch.Tensor, teacher: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        loss = F.mse_loss(student, teacher, reduction="none")
+        if mask is None:
+            return loss.mean()
+
+        valid = mask.unsqueeze(-1).expand_as(loss)
+        loss = loss.masked_select(valid)
+        if loss.numel() == 0:
+            return student.new_zeros(())
+        return loss.mean()
+
+    def _resolve_hidden_distill_layers(self, distill_config: dict | None = None) -> tuple[int, ...]:
+        distill_config = default(distill_config, {})
+        hidden_layers = distill_config.get("hidden_layers")
+        if exists(hidden_layers):
+            hidden_layers = tuple(sorted({int(layer) for layer in hidden_layers}))
+        elif hasattr(self.transformer, "get_default_hidden_distill_layers"):
+            hidden_layers = self.transformer.get_default_hidden_distill_layers()
+        elif hasattr(self.transformer, "depth"):
+            hidden_layers = (int(self.transformer.depth) - 1,)
+        else:
+            hidden_layers = tuple()
+        return hidden_layers
+
     @torch.no_grad()
     def sample(
         self,
@@ -235,6 +259,9 @@ class CFM(nn.Module):
         *,
         lens: int["b"] | None = None,
         noise_scheduler: str | None = None,
+        teacher_model: CFM | None = None,
+        distill_config: dict | None = None,
+        return_metadata: bool = False,
     ):
         # handle raw wave
         if inp.ndim == 2:
@@ -290,13 +317,86 @@ class CFM(nn.Module):
         else:
             drop_text = False
 
+        distill_config = default(distill_config, {})
+        distill_enabled = teacher_model is not None and distill_config.get("enabled", True)
+        hidden_distill_layers = self._resolve_hidden_distill_layers(distill_config) if distill_enabled else tuple()
+        capture_hidden_states = distill_enabled and len(hidden_distill_layers) > 0
+
         # apply mask will use more memory; might adjust batchsize or batchsampler long sequence threshold
-        pred = self.transformer(
-            x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text, mask=mask
-        )
+        if capture_hidden_states:
+            pred, student_hidden_states = self.transformer(
+                x=φ,
+                cond=cond,
+                text=text,
+                time=time,
+                drop_audio_cond=drop_audio_cond,
+                drop_text=drop_text,
+                mask=mask,
+                capture_hidden_layers=hidden_distill_layers,
+                return_hidden_states=True,
+            )
+        else:
+            pred = self.transformer(
+                x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text, mask=mask
+            )
+            student_hidden_states = {}
 
         # flow matching loss
-        loss = F.mse_loss(pred, flow, reduction="none")
-        loss = loss[rand_span_mask]
+        flow_matching_loss = F.mse_loss(pred, flow, reduction="none")
+        flow_matching_loss = flow_matching_loss[rand_span_mask].mean()
 
-        return loss.mean(), cond, pred
+        hidden_distill_loss = pred.new_zeros(())
+        output_distill_loss = pred.new_zeros(())
+        hidden_distill_by_layer = {}
+        if distill_enabled:
+            with torch.no_grad():
+                if capture_hidden_states:
+                    teacher_pred, teacher_hidden_states = teacher_model.transformer(
+                        x=φ,
+                        cond=cond,
+                        text=text,
+                        time=time,
+                        drop_audio_cond=drop_audio_cond,
+                        drop_text=drop_text,
+                        mask=mask,
+                        capture_hidden_layers=hidden_distill_layers,
+                        return_hidden_states=True,
+                    )
+                else:
+                    teacher_pred = teacher_model.transformer(
+                        x=φ,
+                        cond=cond,
+                        text=text,
+                        time=time,
+                        drop_audio_cond=drop_audio_cond,
+                        drop_text=drop_text,
+                        mask=mask,
+                    )
+                    teacher_hidden_states = {}
+
+            if hidden_distill_layers:
+                layer_losses = []
+                for layer_id in hidden_distill_layers:
+                    layer_loss = self._masked_mse(student_hidden_states[layer_id], teacher_hidden_states[layer_id], mask)
+                    hidden_distill_by_layer[layer_id] = float(layer_loss.detach().item())
+                    layer_losses.append(layer_loss)
+                hidden_distill_loss = torch.stack(layer_losses).mean()
+
+            output_distill_loss = self._masked_mse(pred, teacher_pred, mask)
+
+        total_loss = (
+            flow_matching_loss
+            + float(distill_config.get("hidden_weight", 0.02)) * hidden_distill_loss
+            + float(distill_config.get("output_weight", 0.05)) * output_distill_loss
+        )
+
+        if return_metadata:
+            return total_loss, cond, pred, {
+                "flow_matching_loss": float(flow_matching_loss.detach().item()),
+                "hidden_distill_loss": float(hidden_distill_loss.detach().item()),
+                "output_distill_loss": float(output_distill_loss.detach().item()),
+                "distill_hidden_layers": list(hidden_distill_layers),
+                "hidden_distill_by_layer": hidden_distill_by_layer,
+            }
+
+        return total_loss, cond, pred
